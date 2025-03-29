@@ -2,51 +2,103 @@ import geopandas as gpd
 import networkx as nx
 import matplotlib.pyplot as plt
 from shapely.geometry import LineString, Point
-import random
 import heapq
 import math
+import random
 import matplotlib
 matplotlib.use('TkAgg')
-import time
 
-# === Euclidean A* Helper Functions ===
+# === Euclidean Distance ===
 def euclidean(p1, p2):
     return math.dist(p1, p2)
 
-def a_star_euclidean(graph, start, goal):
-    open_set = []
-    heapq.heappush(open_set, (0, start))
-    came_from = {}
-    g_score = {node: float('inf') for node in graph.nodes}
-    g_score[start] = 0
-    f_score = {node: float('inf') for node in graph.nodes}
-    f_score[start] = euclidean(start, goal)
+# === Bidirectional A* with fast animation ===
+def bidirectional_a_star_sim(graph, start, goal, ax):
+    if start == goal:
+        return [start]
 
-    while open_set:
-        _, current = heapq.heappop(open_set)
+    fwd_open = [(0, start)]
+    bwd_open = [(0, goal)]
 
-        if current == goal:
+    fwd_g = {n: float('inf') for n in graph.nodes}
+    bwd_g = {n: float('inf') for n in graph.nodes}
+    fwd_g[start] = 0
+    bwd_g[goal] = 0
+
+    fwd_parent = {}
+    bwd_parent = {}
+
+    visited = set()
+    meeting_node = None
+    best_path_len = float('inf')
+
+    open_f_marker, = ax.plot([], [], 'ro', label='Forward Open', markersize=2)
+    open_b_marker, = ax.plot([], [], 'bo', label='Backward Open', markersize=2)
+
+    f_open_x, f_open_y = [], []
+    b_open_x, b_open_y = [], []
+
+    while fwd_open and bwd_open:
+        _, fwd_node = heapq.heappop(fwd_open)
+        _, bwd_node = heapq.heappop(bwd_open)
+
+        visited.add(fwd_node)
+        visited.add(bwd_node)
+
+        f_open_x.append(fwd_node[0])
+        f_open_y.append(fwd_node[1])
+        b_open_x.append(bwd_node[0])
+        b_open_y.append(bwd_node[1])
+        open_f_marker.set_data(f_open_x, f_open_y)
+        open_b_marker.set_data(b_open_x, b_open_y)
+        plt.draw()
+        plt.pause(0.00001)
+
+        for neighbor in graph.neighbors(fwd_node):
+            temp_g = fwd_g[fwd_node] + graph[fwd_node][neighbor]['weight']
+            if temp_g < fwd_g[neighbor]:
+                fwd_g[neighbor] = temp_g
+                heapq.heappush(fwd_open, (temp_g + euclidean(neighbor, goal), neighbor))
+                fwd_parent[neighbor] = fwd_node
+                if neighbor in bwd_g:
+                    total = temp_g + bwd_g[neighbor]
+                    if total < best_path_len:
+                        best_path_len = total
+                        meeting_node = neighbor
+
+        for neighbor in graph.neighbors(bwd_node):
+            temp_g = bwd_g[bwd_node] + graph[bwd_node][neighbor]['weight']
+            if temp_g < bwd_g[neighbor]:
+                bwd_g[neighbor] = temp_g
+                heapq.heappush(bwd_open, (temp_g + euclidean(neighbor, start), neighbor))
+                bwd_parent[neighbor] = bwd_node
+                if neighbor in fwd_g:
+                    total = temp_g + fwd_g[neighbor]
+                    if total < best_path_len:
+                        best_path_len = total
+                        meeting_node = neighbor
+
+        if meeting_node:
             path = []
-            while current in came_from:
-                path.append(current)
-                current = came_from[current]
+            node = meeting_node
+            while node in fwd_parent:
+                path.append(node)
+                node = fwd_parent[node]
             path.append(start)
-            return path[::-1]
+            path.reverse()
+            node = meeting_node
+            while node in bwd_parent:
+                node = bwd_parent[node]
+                path.append(node)
+            return path
 
-        for neighbor in graph.neighbors(current):
-            tentative_g = g_score[current] + graph[current][neighbor]['weight']
-            if tentative_g < g_score[neighbor]:
-                came_from[neighbor] = current
-                g_score[neighbor] = tentative_g
-                f_score[neighbor] = tentative_g + euclidean(neighbor, goal)
-                heapq.heappush(open_set, (f_score[neighbor], neighbor))
     return None
 
-# === 1. Load Shapefile ===
-shapefile_path = "/Users/vishnujordan/Downloads/Roads_Boundary/South_Clear_Creek_Roads.shp"
-gdf = gpd.read_file(shapefile_path)
+# === Load shapefile ===
+shapefile = "/Users/vishnujordan/Downloads/Roads_Boundary/South_Clear_Creek_Roads.shp"
+gdf = gpd.read_file(shapefile)
 
-# === 2. Build Graph ===
+# === Build Graph ===
 G = nx.Graph()
 for _, row in gdf.iterrows():
     geom = row.geometry
@@ -54,95 +106,63 @@ for _, row in gdf.iterrows():
         coords = list(geom.coords)
         for i in range(len(coords) - 1):
             p1, p2 = coords[i], coords[i + 1]
-            distance = Point(p1).distance(Point(p2))
-            G.add_edge(p1, p2, weight=distance)
+            dist = Point(p1).distance(Point(p2))
+            G.add_edge(p1, p2, weight=dist)
 
-# === 3. Pick Start and Goal ===
+# === Choose Start & Goal with length between 250–500
 nodes = list(G.nodes)
-start = random.choice(nodes)
-goal = random.choice(nodes)
-while goal == start or not nx.has_path(G, start, goal):
-    goal = random.choice(nodes)
+start, goal = None, None
+for _ in range(1000):
+    s, g = random.sample(nodes, 2)
+    if nx.has_path(G, s, g):
+        p = nx.shortest_path(G, s, g, weight='weight')
+        if 250 <= len(p) <= 500:
+            start, goal = s, g
+            break
 
-   
+if not start:
+    raise Exception("❌ Couldn't find suitable start and goal.")
 
-# # === 3. Fixed Start and Goal Coordinates ===
+
+# # === Fixed Start and Goal === for testing purpose
 # fixed_start = (434189.6902, 4388844.3178)
 # fixed_goal = (436216.7882, 4390206.0985)
 
-# # === 4. Snap to Closest Graph Nodes ===
-# def get_nearest_node(graph, point):
-#     return min(graph.nodes, key=lambda n: Point(n).distance(Point(point)))
+# # Snap to nearest graph node
+# # def get_nearest_node(graph, point):
+# #     return min(graph.nodes, key=lambda n: Point(n).distance(Point(point)))
 
 # start = get_nearest_node(G, fixed_start)
 # goal = get_nearest_node(G, fixed_goal)
 
-# print(f"✅ Snapped Start: {start}")
-# print(f"✅ Snapped Goal: {goal}")
+print(f"✅ Start snapped to: {start}")
+print(f"✅ Goal snapped to: {goal}")
 
-# # Check connectivity before running A*
-# if not nx.has_path(G, start, goal):
-#     print("❌ No path exists between start and goal (disconnected components)")
-#     exit()
-
+# Optional: check connectivity
+if not nx.has_path(G, start, goal):
+    raise Exception("❌ No path exists between start and goal.")
 
 
 
-
-
-
-
-
-
-
-
-# === 4. Run Euclidean A* ===
-path = a_star_euclidean(G, start, goal)
-if path is None:
-    print("No path found.")
-    exit()
-print(f"✅ Euclidean A* path has {len(path)} nodes")
-
-# === 5. Prepare Visualization ===
-x_vals = [pt[0] for pt in path]
-y_vals = [pt[1] for pt in path]
-
-# Compute G and H values along path
-path_g_scores = []
-path_h_scores = []
-for i, node in enumerate(path):
-    g = sum(G[path[j]][path[j+1]]['weight'] for j in range(i))
-    h = euclidean(node, goal)
-    path_g_scores.append(g)
-    path_h_scores.append(h)
-
-# === 6. Animate ===
+# === Visualization Setup ===
 plt.ion()
 fig, ax = plt.subplots(figsize=(12, 12))
 gdf.plot(ax=ax, color='lightgray', linewidth=0.5)
-
-# Plot start, goal, and path
 ax.plot(start[0], start[1], 'go', markersize=10, label='Start')
 ax.plot(goal[0], goal[1], 'bo', markersize=10, label='Goal')
-ax.plot(x_vals, y_vals, 'r--', linewidth=2, label='Euclidean A* Path')
 
-# Create dot and text box
-dot, = ax.plot([], [], 'ro', markersize=8)
-text_box = ax.text(0.01, 0.99, '', transform=ax.transAxes, fontsize=12,
-                   verticalalignment='top', bbox=dict(facecolor='white', alpha=0.7))
+# === Run Bidirectional A* with animation ===
+path = bidirectional_a_star_sim(G, start, goal, ax)
 
-# Animate traversal with G, H, F display
-for i, (x, y) in enumerate(zip(x_vals, y_vals)):
-    dot.set_data([x], [y])
-    g_val = path_g_scores[i]
-    h_val = path_h_scores[i]
-    f_val = g_val + h_val
-    text_box.set_text(f"Step {i+1}/{len(path)}\nG: {g_val:.2f}\nH: {h_val:.2f}\nF: {f_val:.2f}")
-    plt.draw()
-    plt.pause(0.000000005)
+if path:
+    x_vals = [pt[0] for pt in path]
+    y_vals = [pt[1] for pt in path]
+    ax.plot(x_vals, y_vals, 'k-', linewidth=2, label='Final Path')
+    ax.set_title("Bidirectional A* - Fast Simulation")
+else:
+    ax.set_title("No Path Found")
 
+ax.legend()
+ax.axis('equal')
 plt.ioff()
-plt.title("Euclidean A* Path Traversal with Heuristic/Cost Info")
-plt.legend()
-plt.axis('equal')
 plt.show()
